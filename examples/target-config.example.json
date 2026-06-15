@@ -1,0 +1,38 @@
+{
+  "extends": "default.json",
+  "target_keywords": [
+    "example.com",
+    "api.example.com"
+  ],
+  "extra_seeds": [
+    "https://www.example.com/",
+    "https://app.example.com/login"
+  ],
+  "api_prefixes": [
+    "/api/",
+    "/admin-api/",
+    "/gateway/"
+  ],
+  "api_path_regexes": [
+    "/(?:api|admin-api|gateway)/(?:v[0-9]+/)?",
+    "/(?:graphql|openapi|swagger)(?:/|$)"
+  ],
+  "known_endpoints": [
+    "/openapi.json",
+    "/swagger-ui.html",
+    "/graphql"
+  ],
+  "extract_patterns": [
+    {
+      "name": "CUSTOM_REQUEST_WRAPPER",
+      "pattern": "request\\s*\\(\\s*\\{[^}]*url\\s*:\\s*[\"'`](?P<endpoint>/[^\"'`]+)[\"'`]",
+      "kind": "relative",
+      "confidence": "medium"
+    }
+  ],
+  "garbage_substrings": [
+    "node_modules",
+    "_0x",
+    "webpack"
+  ]
+}

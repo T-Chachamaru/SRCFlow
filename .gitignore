@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+
+# Runtime target data
+targets/*/raw/
+targets/*/state/
+targets/*/findings/
+targets/*/reports/
+!targets/_template/
+
+# Tool caches and downloaded release archives
+tools/downloads/
+tools/tool_status.json
+tools/tool_install_status.json
+tools/TO_DOWNLOAD.txt
+
+# Local secrets and browser/network captures
+*.har
+*.trace.zip
+*.pcap
+*.pcapng
+.env
+*.secret
+cookies.txt
+tokens.txt
+
+# Legacy one-off outputs
+remote_sites/
+remote_sites_*/
+remote_sites_endpoints.json
