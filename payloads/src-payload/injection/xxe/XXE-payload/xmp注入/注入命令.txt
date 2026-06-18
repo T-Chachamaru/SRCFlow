@@ -1,0 +1,3 @@
+exiftool -tagsfromfile malicious.xmp -xmp poc.png -overwrite_original
+
+exiftool -tagsfromfile malicious.xmp -XMP-dc:all= -overwrite_original poc.pdf

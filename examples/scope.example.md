@@ -17,6 +17,7 @@
   - api.example.com
 - IP ranges:
   - N/A
+  - 203.0.113.0/24 # example only; CLI guards enforce CIDR entries when present
 - Apps / packages:
   - com.example.app
 - Seed URLs:
@@ -45,8 +46,8 @@
 
 - Max threads: 5
 - Max request rate: 2 req/s
-- Allowed scanner templates: low-risk exposure/configuration templates only
-- Disallowed scanner templates: fuzzing, brute force, destructive, DoS
+- Allowed wrappers: katana-crawl, ffuf-safe
+- Disallowed scan types: brute force, destructive, DoS, intrusive fuzzing
 
 ## Evidence Rules
 

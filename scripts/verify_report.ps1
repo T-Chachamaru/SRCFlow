@@ -1,5 +1,12 @@
 param(
-    [Parameter(Mandatory=$true)][string]$Report
+    [Parameter(Mandatory=$true)][string]$Report,
+    [string]$Target = ""
 )
 
-python ".\ai_src.py" gate $Report
+$argsList = @("gate", $Report)
+if ($Target) {
+    $argsList += @("--target", $Target)
+}
+
+python ".\ai_src.py" @argsList
+exit $LASTEXITCODE

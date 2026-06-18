@@ -9,6 +9,8 @@
 - Tool status checked:
 - Browser pages exercised:
 - Auth context:
+- Katana routes collected:
+- Katana scoped seed file:
 
 ### Network Observations
 
@@ -48,10 +50,14 @@
 - Current snapshot:
 - High-value files reviewed:
 - HAR / Network source:
+- Katana seed source:
+- ffuf candidate source:
+- Metrics summary:
+- Flywheel note updated: yes/no
 
 ### Missed Patterns
 
-- Miss source: Network / JS review / HTML review / manifest / links / HAR
+- Miss source: Network / katana / JS review / HTML review / manifest / links / HAR
 - Missed request wrapper:
 - Missed path pattern:
 - False-positive pattern:
@@ -66,3 +72,4 @@
 
 - Continue / stop:
 - Reason:
+- Soft loop hint considered:

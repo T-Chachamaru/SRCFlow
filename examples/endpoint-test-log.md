@@ -17,6 +17,7 @@
 - Response fields:
 - JS/HTML source files:
 - Network / HAR source:
+- ffuf candidate source:
 - Related endpoints:
 
 ## Function Judgment
@@ -55,3 +56,4 @@
 - Reason:
 - Report candidate: yes/no
 - Next endpoint or pattern:
+- Metrics / flywheel note:

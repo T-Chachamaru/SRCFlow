@@ -17,6 +17,7 @@ For each endpoint or endpoint family, determine function, parameters, attack sur
    - JSON bodies.
    - Response fields.
    - Related endpoints with similar resource names.
+   - Scoped `ffuf-safe` runs when sibling paths, actions, parameter names, header names, or body keys are likely but not visible.
 3. Determine function:
    - list
    - detail
@@ -46,6 +47,27 @@ For each endpoint or endpoint family, determine function, parameters, attack sur
 6. Record status and evidence.
 7. Reflect on what the result implies for sibling endpoints, config patterns, and the next test.
 
+## ffuf In The Loop
+
+Use `ffuf-safe` as the default low-rate discovery aid when manual evidence suggests a small, scoped search space:
+
+- Sibling paths or actions: `python ai_src.py ffuf-safe <target> https://host/api/resource/FUZZ wordlist.txt`
+- Query parameter names or values: place `FUZZ` in the query string.
+- Header probes: use `--header "X-Feature: FUZZ"` or another scoped test header.
+- Body key/value probes: use `--method POST --data '{"key":"FUZZ"}'` or a test-body variant.
+
+Review `targets/<target>/state/ffuf_candidates.json` after each run. Treat entries as leads only, then verify them manually and record the result with `log-test`.
+Before picking `wordlist.txt`, read `payloads/src-payload/README.md` and choose the narrowest relevant directory:
+
+- `payloads/src-payload/fuzzing/api-paths/` for API route, action, and object discovery.
+- `payloads/src-payload/fuzzing/params/` for query, header, and body key discovery.
+- `payloads/src-payload/fuzzing/files/` for common file names and file-like endpoints.
+- `payloads/src-payload/fuzzing/lfi-file-read/` only when file-read behavior is already suspected.
+- `payloads/src-payload/injection/` only after endpoint behavior suggests a specific injection class.
+
+Use `--profile` for common ffuf modes and `--` passthrough for advanced native ffuf matchers, filters, encoders, recursion, or transport options. Passthrough cannot override target URL, output, output format, rate, threads, raw request, or input command execution.
+If `scope.md` restricts `Allowed wrappers`, the CLI enforces that list.
+
 ## Status Values
 
 - `confirmed`: Reproducible security impact with evidence.
@@ -62,7 +84,7 @@ For each endpoint or endpoint family, determine function, parameters, attack sur
 - For state-changing operations, use test data and stop before irreversible actions.
 - For file endpoints, verify both metadata and file content access control.
 - For export endpoints, avoid bulk export; prove impact with the smallest possible sample.
-- For upload endpoints, avoid malware, persistence, or public payloads.
+- For upload endpoints, avoid malware, persistence, public payloads, archive bombs, and web shells unless explicitly authorized in an isolated test environment.
 
 ## Notes To Record
 
@@ -77,6 +99,10 @@ Record each endpoint test in the target state or finding notes with:
 - Evidence location.
 - Status.
 - Next endpoint or pattern to test.
+
+Prefer `python ai_src.py log-test <target> <endpoint> --status <status>` for records that should survive context compression or guide the next direction.
+
+After several meaningful endpoint results, run `python ai_src.py metrics <target>` to review status distribution and unresolved candidates. Use `python ai_src.py flywheel <target>` to preserve lessons about effective parameters, accounts, tool profiles, and rejected patterns. These outputs are soft reflection aids, not report evidence.
 
 ## Report Decision
 

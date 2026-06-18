@@ -19,24 +19,6 @@ $tools = @(
         AssetRegex = "windows.*amd64.*\.zip$|windows.*x86_64.*\.zip$"
     },
     @{
-        Name = "nuclei"
-        GoPackage = "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
-        Repo = "projectdiscovery/nuclei"
-        AssetRegex = "windows.*amd64.*\.zip$|windows.*x86_64.*\.zip$"
-    },
-    @{
-        Name = "subfinder"
-        GoPackage = "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
-        Repo = "projectdiscovery/subfinder"
-        AssetRegex = "windows.*amd64.*\.zip$|windows.*x86_64.*\.zip$"
-    },
-    @{
-        Name = "httpx"
-        GoPackage = "github.com/projectdiscovery/httpx/cmd/httpx@latest"
-        Repo = "projectdiscovery/httpx"
-        AssetRegex = "windows.*amd64.*\.zip$|windows.*x86_64.*\.zip$"
-    },
-    @{
         Name = "ffuf"
         GoPackage = "github.com/ffuf/ffuf/v2@latest"
         Repo = "ffuf/ffuf"

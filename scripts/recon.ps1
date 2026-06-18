@@ -1,32 +1,12 @@
 param(
     [Parameter(Mandatory=$true)][string]$Target,
     [string]$Config = "",
-    [string]$Domain = "",
     [string]$Url = "",
     [int]$Depth = 2,
     [int]$Threads = 10,
     [switch]$Render,
-    [switch]$Subdomains,
-    [switch]$HttpxLive,
     [switch]$Katana
 )
-
-$state = Join-Path ".\targets" (Join-Path $Target "state")
-
-if ($Subdomains) {
-    if (-not $Domain) {
-        Write-Error "-Domain is required when -Subdomains is used."
-        exit 2
-    }
-    python ".\ai_src.py" subdomains $Target $Domain
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
-
-if ($HttpxLive) {
-    $subdomainsPath = Join-Path $state "subdomains.txt"
-    python ".\ai_src.py" httpx-live $Target $subdomainsPath
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-}
 
 if ($Katana) {
     if (-not $Url) {
@@ -51,3 +31,4 @@ if ($Config) {
     $extractArgs += @("--config", $Config)
 }
 python ".\ai_src.py" @extractArgs
+exit $LASTEXITCODE

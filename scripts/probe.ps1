@@ -14,3 +14,4 @@ if ($Limit -gt 0) {
 }
 
 python ".\ai_src.py" @argsList
+exit $LASTEXITCODE

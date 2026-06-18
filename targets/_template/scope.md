@@ -14,7 +14,7 @@
 - Domains:
   - TODO
 - IP ranges:
-  - TODO or N/A
+  - TODO or N/A (CIDR such as 203.0.113.0/24 is enforced by CLI guards)
 - Apps / packages:
   - TODO or N/A
 - Seed URLs:
@@ -43,8 +43,8 @@
 
 - Max threads:
 - Max request rate:
-- Allowed scanner templates:
-- Disallowed scanner templates:
+- Allowed wrappers: katana-crawl, ffuf-safe, or narrower
+- Disallowed scan types: brute force, destructive, DoS, intrusive fuzzing
 
 ## Evidence Rules
 
