@@ -1,0 +1,30 @@
+{
+  "warning": "Local credentials and session material for authorized testing. Copy this shape to targets/<target>/auth.local.json; do not commit real values.",
+  "profiles": {
+    "low": {
+      "role": "low privilege",
+      "username": "low@example.test",
+      "password": "REPLACE_WITH_AUTHORIZED_TEST_PASSWORD",
+      "login_url": "https://www.example.com/login",
+      "tenant": "Example-Test-Tenant",
+      "cookie": "SESSION=REPLACE_WITH_BROWSER_SESSION",
+      "authorization": "Bearer REPLACE_WITH_TOKEN",
+      "headers": {
+        "X-Test-Tenant": "Example-Test-Tenant"
+      },
+      "note": "Authorized low-privilege test account."
+    },
+    "peer": {
+      "role": "peer user",
+      "username": "peer@example.test",
+      "password": "REPLACE_WITH_AUTHORIZED_TEST_PASSWORD",
+      "login_url": "https://www.example.com/login",
+      "tenant": "Example-Test-Tenant",
+      "cookie_env": "SRCFLOW_PEER_COOKIE",
+      "authorization_env": "SRCFLOW_PEER_AUTHORIZATION",
+      "headers_env": {
+        "X-Test-Tenant": "SRCFLOW_TEST_TENANT"
+      }
+    }
+  }
+}

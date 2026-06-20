@@ -398,6 +398,12 @@ def write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def read_json_file(path: Path, default: object | None = None) -> object:
+    if not path.exists():
+        return {} if default is None else default
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
 def append_jsonl(path: Path, record: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
@@ -624,7 +630,9 @@ def summarize_target_metrics(base: Path) -> dict[str, object]:
     ffuf_events = [row for row in events if row.get("event") == "ffuf"]
     extract_events = [row for row in events if row.get("event") == "extract"]
     gate_events = [row for row in events if row.get("event") == "gate"]
+    audit_events = [row for row in events if row.get("event") == "audit"]
 
+    latest_audit = latest_event(events, "audit")
     latest_katana = latest_event(events, "katana")
     latest_ffuf = latest_event(events, "ffuf")
     latest_extract = latest_event(events, "extract")
@@ -654,6 +662,7 @@ def summarize_target_metrics(base: Path) -> dict[str, object]:
         for row in ffuf_events
     )
 
+    latest_audit_data = event_data(latest_audit)
     latest_extract_data = event_data(latest_extract)
     latest_katana_data = event_data(latest_katana)
     latest_ffuf_data = event_data(latest_ffuf)
@@ -664,6 +673,10 @@ def summarize_target_metrics(base: Path) -> dict[str, object]:
     )
 
     hints: list[str] = []
+    if latest_audit_data.get("status") == "blocked":
+        hints.append("Latest target audit is blocked; resolve audit blockers before active testing.")
+    elif latest_audit_data.get("status") == "ready_with_warnings":
+        hints.append("Latest target audit has warnings; keep them in mind but continue if no blocker affects the current direction.")
     if number_value(latest_katana_data.get("scoped_url_count")) > 0 and row_time(latest_katana) > row_time(latest_crawl):
         hints.append("Katana produced scoped seeds after the last crawl; consider recrawling before another extraction pass.")
     if number_value(latest_ffuf_data.get("candidate_count")) > 0 and row_time(latest_ffuf) > endpoint_test_time:
@@ -686,6 +699,12 @@ def summarize_target_metrics(base: Path) -> dict[str, object]:
         "event_count": len(events),
         "last_event_time": str(events[-1].get("time", "")) if events else "",
         "events_by_type": counter_dict(event_counts),
+        "audit": {
+            "runs": len(audit_events),
+            "latest_status": str(latest_audit_data.get("status", "")) if latest_audit else "",
+            "latest_blockers": number_value(latest_audit_data.get("blockers"), 0),
+            "latest_warnings": number_value(latest_audit_data.get("warnings"), 0),
+        },
         "endpoint_tests": {
             "records": len(endpoint_tests),
             "status_counts": counter_dict(test_status_counts),
@@ -750,12 +769,16 @@ def render_flywheel(base: Path, summary: dict[str, object]) -> str:
     ffuf_raw = summary.get("ffuf", {})
     extract_raw = summary.get("extract", {})
     gate_raw = summary.get("gate", {})
+    audit_raw = summary.get("audit", {})
+    audit = audit_raw if isinstance(audit_raw, dict) else {}
     katana = katana_raw if isinstance(katana_raw, dict) else {}
     ffuf = ffuf_raw if isinstance(ffuf_raw, dict) else {}
     extract = extract_raw if isinstance(extract_raw, dict) else {}
     gate = gate_raw if isinstance(gate_raw, dict) else {}
 
     what_worked = []
+    if audit.get("latest_status") == "ready":
+        what_worked.append("- Latest target audit is ready.")
     if number_value(katana.get("total_scoped_urls")):
         what_worked.append(f"- Katana contributed {katana.get('total_scoped_urls')} scoped URLs across {katana.get('runs')} run(s).")
     if number_value(ffuf.get("total_candidates")):
@@ -768,6 +791,10 @@ def render_flywheel(base: Path, summary: dict[str, object]) -> str:
         what_worked.append("- Not enough recorded signal yet.")
 
     weak_spots = []
+    if audit.get("latest_status") == "blocked":
+        weak_spots.append(f"- Latest target audit is blocked with {audit.get('latest_blockers', 0)} blocker(s).")
+    elif audit.get("latest_status") == "ready_with_warnings":
+        weak_spots.append(f"- Latest target audit has {audit.get('latest_warnings', 0)} warning(s).")
     if not number_value(endpoint_tests.get("records")) and number_value(extract.get("latest_total_unique"), -1) > 0:
         weak_spots.append("- Extracted endpoints have not been converted into logged endpoint tests.")
     if number_value(status_counts.get("needs more context")):
@@ -807,6 +834,7 @@ def render_flywheel(base: Path, summary: dict[str, object]) -> str:
         "",
         f"- Events: {summary.get('event_count', 0)}",
         f"- Last event: {summary.get('last_event_time') or '-'}",
+        f"- Latest audit: status={audit.get('latest_status') or '-'} blockers={metric_display(audit.get('latest_blockers'))} warnings={metric_display(audit.get('latest_warnings'))}",
         f"- Latest extract: unique={metric_display(extract.get('latest_total_unique'))} raw={metric_display(extract.get('latest_total_raw'))} delta_added={metric_display(extract.get('latest_delta_added'))}",
         f"- Endpoint tests: {endpoint_tests.get('records', 0)}",
         f"- Gate runs: {gate.get('runs', 0)}",
@@ -841,19 +869,339 @@ def render_scope(name: str, domains: list[str], seeds: list[str]) -> str:
     return rendered
 
 
+def replace_scope_line(text: str, label: str, value: str) -> str:
+    return re.sub(rf"^- {re.escape(label)}:.*$", f"- {label}: {value}", text, flags=re.M)
+
+
+def replace_scope_list(text: str, label: str, values: list[str], fallback: str = "TODO") -> str:
+    clean = [item.strip() for item in values if item.strip()]
+    if not clean:
+        clean = [fallback]
+    block = f"- {label}:\n" + "\n".join(f"  - {item}" for item in clean) + "\n"
+    return re.sub(rf"^- {re.escape(label)}:\n(?:  - .*(?:\n|$))*", block, text, flags=re.M)
+
+
+def replace_scope_section_list(text: str, section: str, next_section: str, values: list[str]) -> str:
+    clean = [item.strip() for item in values if item.strip()]
+    block = f"## {section}\n\n" + "\n".join(f"- {item}" for item in clean) + "\n\n"
+    pattern = rf"## {re.escape(section)}\n\n.*?\n## {re.escape(next_section)}"
+    return re.sub(pattern, block + f"## {next_section}", text, flags=re.S)
+
+
+def render_scope_from_wizard(name: str, setup: dict[str, object]) -> str:
+    template = (TARGETS_DIR / "_template" / "scope.md").read_text(encoding="utf-8")
+    rendered = template
+
+    def text_value(key: str, default: str = "TODO") -> str:
+        value = str(setup.get(key) or "").strip()
+        return value or default
+
+    def list_value(key: str) -> list[str]:
+        value = setup.get(key)
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    rendered = replace_scope_line(rendered, "Status", text_value("authorization_status", "TODO - pending"))
+    rendered = replace_scope_line(rendered, "Authorization source", text_value("authorization_source"))
+    rendered = replace_scope_line(rendered, "Window", text_value("authorization_window"))
+    rendered = replace_scope_line(rendered, "Owner / SRC", text_value("owner"))
+    rendered = replace_scope_line(rendered, "Tester identity", text_value("tester_identity"))
+    rendered = replace_scope_line(rendered, "Target", slugify(name))
+
+    rendered = replace_scope_list(rendered, "Domains", list_value("domains"))
+    rendered = replace_scope_list(rendered, "IP ranges", list_value("ip_ranges"), "N/A")
+    rendered = replace_scope_list(rendered, "Apps / packages", list_value("apps"), "N/A")
+    rendered = replace_scope_list(rendered, "Seed URLs", list_value("seeds"))
+    rendered = replace_scope_list(rendered, "Allowed environments", list_value("allowed_environments"), "production read-only")
+
+    rendered = replace_scope_section_list(rendered, "Out Of Scope", "Test Accounts", list_value("out_of_scope"))
+
+    rendered = replace_scope_line(rendered, "Anonymous / no-auth baseline", text_value("account_anonymous", "no cookies"))
+    rendered = replace_scope_line(rendered, "Low privilege", text_value("account_low", "TODO"))
+    rendered = replace_scope_line(rendered, "Peer user", text_value("account_peer", "TODO"))
+    rendered = replace_scope_line(rendered, "Admin / high privilege", text_value("account_admin", "only if explicitly approved"))
+    rendered = replace_scope_line(rendered, "Test tenant / organization", text_value("test_tenant", "TODO"))
+
+    rendered = replace_scope_line(rendered, "Max threads", text_value("max_threads", "5"))
+    rendered = replace_scope_line(rendered, "Max request rate", text_value("max_request_rate", "2 req/s"))
+    rendered = replace_scope_line(rendered, "Allowed wrappers", ", ".join(list_value("allowed_wrappers")) or "katana-crawl, ffuf-safe")
+    rendered = replace_scope_line(rendered, "Disallowed scan types", text_value("disallowed_scan_types", "brute force, destructive, DoS, intrusive fuzzing"))
+
+    rendered = replace_scope_line(rendered, "Redaction requirements", text_value("redaction", "redact tokens, cookies, PII, and secrets"))
+    rendered = replace_scope_line(rendered, "Maximum records to view", text_value("max_records", "3"))
+    rendered = replace_scope_line(rendered, "Screenshot allowed", text_value("screenshot_allowed", "yes, with redaction"))
+    rendered = replace_scope_line(rendered, "Response body storage allowed", text_value("response_body_storage", "only sanitized excerpts"))
+
+    notes = list_value("notes") or [
+        "Keep evidence minimal.",
+        "Stop before irreversible state changes unless explicit test data is available.",
+    ]
+    rendered = re.sub(
+        r"## Notes\n\n.*\Z",
+        "## Notes\n\n" + "\n".join(f"- {note}" for note in notes) + "\n",
+        rendered,
+        flags=re.S,
+    )
+    return rendered
+
+
+def split_wizard_items(value: str) -> list[str]:
+    if value.strip().lower() in {"n/a", "na", "none", "no", "-"}:
+        return []
+    parts = re.split(r"[,;\n\uFF0C\uFF1B]+", value)
+    result: list[str] = []
+    for part in parts:
+        item = part.strip()
+        if item and item not in result:
+            result.append(item)
+    return result
+
+
+def prompt_wizard_value(label: str, default: str = "", required: bool = False) -> str:
+    suffix = f" [{default}]" if default else ""
+    while True:
+        try:
+            value = input(f"{label}{suffix}: ").strip()
+        except EOFError:
+            value = ""
+        if not value and default:
+            value = default
+        if value or not required:
+            return value
+        print("Required. Enter a value or press Ctrl+C to cancel.")
+
+
+def prompt_wizard_list(label: str, default: list[str] | None = None, required: bool = False) -> list[str]:
+    default = default or []
+    default_text = ", ".join(default)
+    suffix = f" [{default_text}]" if default_text else ""
+    while True:
+        try:
+            raw = input(f"{label}{suffix}: ").strip()
+        except EOFError:
+            raw = ""
+        values = list(default) if not raw and default else split_wizard_items(raw)
+        if values or not required:
+            return values
+        print("Required. Use comma-separated values, or press Ctrl+C to cancel.")
+
+
+def prompt_wizard_yes_no(label: str, default: bool = False) -> bool:
+    default_text = "Y/n" if default else "y/N"
+    try:
+        value = input(f"{label} [{default_text}]: ").strip().lower()
+    except EOFError:
+        value = ""
+    if not value:
+        return default
+    return value in {"y", "yes"}
+
+
+def target_config_output(value: str, target_name: str) -> tuple[str, Path]:
+    if value == "default":
+        label = slugify(target_name)
+        return label, CONFIG_DIR / f"{label}.json"
+    path = Path(value)
+    if path.suffix.lower() == ".json" or path.parent != Path("."):
+        output = path if path.is_absolute() else ROOT / path
+        return str(path), output
+    return value, CONFIG_DIR / f"{value}.json"
+
+
+def build_wizard_config(setup: dict[str, object]) -> dict[str, object]:
+    def list_value(key: str) -> list[str]:
+        value = setup.get(key)
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    data: dict[str, object] = {
+        "extends": "default.json",
+        "target_keywords": list_value("target_keywords") or list_value("domains"),
+        "extra_seeds": list_value("seeds"),
+    }
+    optional_lists = (
+        "api_prefixes",
+        "api_path_regexes",
+        "known_endpoints",
+        "garbage_substrings",
+    )
+    for key in optional_lists:
+        values = list_value(key)
+        if values:
+            data[key] = values
+    return data
+
+
+def collect_wizard_auth_profiles() -> dict[str, dict[str, object]]:
+    if not prompt_wizard_yes_no("Create local auth profiles for agent automation?", default=False):
+        return {}
+    names = prompt_wizard_list("Auth profile names", ["low", "peer"])
+    profiles: dict[str, dict[str, object]] = {}
+    print("These values are written to targets/<target>/auth.local.json, which is gitignored.")
+    print("The Agent can read this file for browser login and authenticated request automation.")
+    for name in names:
+        print(f"")
+        print(f"Auth profile: {name}")
+        profile: dict[str, object] = {
+            "role": prompt_wizard_value("Role / auth context", name),
+            "username": prompt_wizard_value("Username / login identifier"),
+            "password": prompt_wizard_value("Password"),
+            "login_url": prompt_wizard_value("Login URL"),
+            "tenant": prompt_wizard_value("Tenant / organization"),
+        }
+        cookie = prompt_wizard_value("Cookie header value")
+        authorization = prompt_wizard_value("Authorization header value")
+        headers = prompt_wizard_list("Extra headers as 'Name: value'")
+        note = prompt_wizard_value("Auth profile note")
+        if cookie:
+            profile["cookie"] = cookie
+        if authorization:
+            profile["authorization"] = authorization
+        parsed_headers: dict[str, str] = {}
+        for header in headers:
+            parsed = split_header_line(header)
+            if parsed:
+                parsed_headers[parsed[0]] = parsed[1]
+            else:
+                print(f"Skipping invalid header: {header}")
+        if parsed_headers:
+            profile["headers"] = parsed_headers
+        if note:
+            profile["note"] = note
+        profile["updated_at"] = utc_now()
+        profiles[name] = profile
+    return profiles
+
+
+def collect_target_wizard(args: argparse.Namespace) -> dict[str, object] | None:
+    target = slugify(args.name)
+    print("Target setup wizard")
+    print("Credentials/session material may be entered only for local auth profiles.")
+    print("They are written to targets/<target>/auth.local.json, which is gitignored and intended for Agent automation.")
+    print("Use comma-separated values for list prompts. Enter N/A for an empty list.")
+    print("")
+
+    domains = prompt_wizard_list("In-scope domains", sorted(set(args.domain or [])))
+    seeds = prompt_wizard_list("Seed URLs", sorted(set(args.seed or [])))
+    ip_ranges = prompt_wizard_list("In-scope IP/CIDR ranges")
+    if not domains and not ip_ranges:
+        print("Warning: no domain or IP/CIDR was provided. Scope guards will block active commands until scope is completed.")
+
+    default_out = [
+        "Third-party domains unless explicitly listed above.",
+        "Production destructive actions.",
+        "Denial of service, stress testing, credential stuffing, social engineering.",
+        "Bulk export of sensitive data.",
+        "Payment, SMS, email, push notification, or irreversible workflows unless explicit test data is provided.",
+        "Employee, customer, or private tenant data outside the approved test accounts.",
+    ]
+
+    setup: dict[str, object] = {
+        "authorization_status": prompt_wizard_value("Authorization status", "TODO - written authorization confirmed / pending"),
+        "authorization_source": prompt_wizard_value("Authorization source"),
+        "authorization_window": prompt_wizard_value("Authorization window", "TODO - YYYY-MM-DD HH:mm to YYYY-MM-DD HH:mm, timezone"),
+        "owner": prompt_wizard_value("Owner / SRC"),
+        "tester_identity": prompt_wizard_value("Tester identity"),
+        "domains": domains,
+        "ip_ranges": ip_ranges,
+        "apps": prompt_wizard_list("Apps / packages"),
+        "seeds": seeds,
+        "allowed_environments": prompt_wizard_list("Allowed environments", ["production read-only"]),
+        "out_of_scope": default_out + prompt_wizard_list("Additional out-of-scope items"),
+        "account_anonymous": prompt_wizard_value("Anonymous baseline", "no cookies"),
+        "account_low": prompt_wizard_value("Low-privilege test account identifier"),
+        "account_peer": prompt_wizard_value("Peer-user test account identifier"),
+        "account_admin": prompt_wizard_value("Admin/high-privilege account identifier", "only if explicitly approved"),
+        "test_tenant": prompt_wizard_value("Test tenant / organization"),
+        "max_threads": prompt_wizard_value("Max threads", "5"),
+        "max_request_rate": prompt_wizard_value("Max request rate", "2 req/s"),
+        "allowed_wrappers": prompt_wizard_list("Allowed wrappers", ["katana-crawl", "ffuf-safe"]),
+        "disallowed_scan_types": prompt_wizard_value("Disallowed scan types", "brute force, destructive, DoS, intrusive fuzzing"),
+        "redaction": prompt_wizard_value("Redaction requirements", "redact tokens, cookies, PII, and secrets"),
+        "max_records": prompt_wizard_value("Maximum records to view", "3"),
+        "screenshot_allowed": prompt_wizard_value("Screenshot allowed", "yes, with redaction"),
+        "response_body_storage": prompt_wizard_value("Response body storage allowed", "only sanitized excerpts"),
+        "notes": prompt_wizard_list("Additional notes"),
+        "target_keywords": prompt_wizard_list("Config target keywords", domains),
+        "api_prefixes": prompt_wizard_list("Extra API prefixes"),
+        "api_path_regexes": prompt_wizard_list("Extra API path regexes"),
+        "known_endpoints": prompt_wizard_list("Extra known endpoints"),
+        "garbage_substrings": prompt_wizard_list("Extra garbage substrings"),
+    }
+    auth_profiles = collect_wizard_auth_profiles()
+    if auth_profiles:
+        setup["auth_profiles"] = auth_profiles
+
+    config_label, config_path = target_config_output(args.config, target)
+    setup["config_label"] = config_label
+    setup["config_path"] = str(config_path)
+
+    print("")
+    print("Summary")
+    print(f"- Target: {target}")
+    print(f"- Domains: {', '.join(domains) or '-'}")
+    print(f"- IP/CIDR: {', '.join(ip_ranges) or '-'}")
+    print(f"- Seeds: {', '.join(seeds) or '-'}")
+    print(f"- Config: {config_path}")
+    if not prompt_wizard_yes_no("Write these target files?", default=False):
+        print("Wizard cancelled; no files were written.")
+        return None
+    return setup
+
+
 def cmd_init_target(args: argparse.Namespace) -> int:
     base = target_dir(args.name)
-    ensure_target_dirs(base)
 
-    domains = sorted(set(args.domain or []))
-    seeds = sorted(set(args.seed or []))
+    setup: dict[str, object] | None = None
+    config_label = args.config
+    config_path: Path | None = None
+    if args.wizard:
+        setup = collect_target_wizard(args)
+        if setup is None:
+            return 2
+        domains = sorted(set(str(item) for item in setup.get("domains", []) if str(item).strip()))
+        seeds = sorted(set(str(item) for item in setup.get("seeds", []) if str(item).strip()))
+        config_label = str(setup.get("config_label") or args.config)
+        config_path = Path(str(setup.get("config_path")))
+    else:
+        domains = sorted(set(args.domain or []))
+        seeds = sorted(set(args.seed or []))
+
+    ensure_target_dirs(base)
     scope_path = base / "scope.md"
-    if not scope_path.exists():
-        scope_path.write_text(render_scope(args.name, domains, seeds), encoding="utf-8")
-    elif domains or seeds:
-        existing = scope_path.read_text(encoding="utf-8", errors="ignore")
-        if "- Target: TODO" in existing and "Authorization source: TODO" in existing:
+    if setup is not None:
+        pending_paths = [scope_path, base / "domains.txt", base / "seeds.txt"]
+        if config_path is not None:
+            pending_paths.append(config_path)
+        auth_profiles = setup.get("auth_profiles")
+        if isinstance(auth_profiles, dict) and auth_profiles:
+            pending_paths.append(auth_store_path(base))
+        existing_paths = [path for path in pending_paths if path.exists()]
+        if existing_paths and not args.force:
+            print("The following files already exist:")
+            for path in existing_paths:
+                print(f"- {path}")
+            if not prompt_wizard_yes_no("Overwrite existing files?", default=False):
+                print("Wizard cancelled; no files were overwritten.")
+                return 2
+        scope_path.write_text(render_scope_from_wizard(args.name, setup), encoding="utf-8")
+        if config_path is not None:
+            write_json(config_path, build_wizard_config(setup))
+        if isinstance(auth_profiles, dict) and auth_profiles:
+            write_json(auth_store_path(base), {
+                "warning": "Local credentials and session material for authorized testing. This file is gitignored; do not commit it.",
+                "created_at": utc_now(),
+                "profiles": auth_profiles,
+            })
+    else:
+        if not scope_path.exists():
             scope_path.write_text(render_scope(args.name, domains, seeds), encoding="utf-8")
+        elif domains or seeds:
+            existing = scope_path.read_text(encoding="utf-8", errors="ignore")
+            if "- Target: TODO" in existing and "Authorization source: TODO" in existing:
+                scope_path.write_text(render_scope(args.name, domains, seeds), encoding="utf-8")
 
     if domains:
         (base / "domains.txt").write_text("\n".join(domains) + "\n", encoding="utf-8")
@@ -865,18 +1213,26 @@ def cmd_init_target(args: argparse.Namespace) -> int:
         "created_at": utc_now(),
         "domains": domains,
         "seeds": seeds,
-        "config": args.config,
-        "notes": "Fill scope.md before active testing.",
+        "config": config_label,
+        "notes": "Generated with setup wizard." if setup is not None else "Fill scope.md before active testing.",
     }
     write_json(base / "state" / "target.json", state)
     append_metric(base, "init_target", {
         "domains_count": len(domains),
         "seeds_count": len(seeds),
-        "config": args.config,
+        "config": config_label,
+        "wizard": setup is not None,
+        "auth_profiles": sorted((setup.get("auth_profiles") or {}).keys()) if setup is not None and isinstance(setup.get("auth_profiles"), dict) else [],
     })
 
     print(f"Target ready: {base}")
     print(f"Edit scope:   {base / 'scope.md'}")
+    if config_path is not None:
+        print(f"Config:       {config_path}")
+        try:
+            cmd_validate_config(argparse.Namespace(config=config_label))
+        except Exception as exc:
+            eprint(f"Config validation warning: {exc}")
     return 0
 
 
@@ -908,6 +1264,13 @@ def cmd_crawl(args: argparse.Namespace) -> int:
     outdir = base / "raw" / "remote_sites"
     threads = cap_int_by_scope(args.threads, scope, "max_threads", "threads")
     delay = delay_from_scope(args.delay, scope)
+    auth = load_auth_profile_for_args(base, args.auth_profile)
+    if args.auth_profile and auth is None:
+        return 2
+    profile_cookie = str(auth.get("cookie") or "") if auth else ""
+    profile_authorization = str(auth.get("authorization") or "") if auth else ""
+    cookie = args.cookie or profile_cookie
+    authorization = args.authorization or profile_authorization
     cmd = [
         sys.executable,
         str(ROOT / "scripts" / "download_remote_sites.py"),
@@ -940,10 +1303,10 @@ def cmd_crawl(args: argparse.Namespace) -> int:
         cmd.append("--render")
         cmd.extend(["--render-timeout", str(args.render_timeout)])
         cmd.extend(["--render-depth", str(args.render_depth)])
-    if args.cookie:
-        cmd.extend(["--cookie", args.cookie])
-    if args.authorization:
-        cmd.extend(["--authorization", args.authorization])
+    if cookie:
+        cmd.extend(["--cookie", cookie])
+    if authorization:
+        cmd.extend(["--authorization", authorization])
     if args.max_urls:
         cmd.extend(["--max-urls", str(args.max_urls)])
     if args.batch_size:
@@ -984,6 +1347,9 @@ def cmd_crawl(args: argparse.Namespace) -> int:
         "depth": args.depth,
         "threads": threads,
         "delay": delay,
+        "auth_profile": args.auth_profile,
+        "auth_cookie": bool(cookie),
+        "auth_authorization": bool(authorization),
     }
     write_json(base / "state" / "last_crawl.json", crawl_state)
     append_metric(base, "crawl", {
@@ -995,6 +1361,9 @@ def cmd_crawl(args: argparse.Namespace) -> int:
         "mode": args.mode,
         "depth": args.depth,
         "threads": threads,
+        "auth_profile": args.auth_profile,
+        "auth_cookie": bool(cookie),
+        "auth_authorization": bool(authorization),
     })
     return code
 
@@ -1340,6 +1709,10 @@ def cmd_katana_crawl(args: argparse.Namespace) -> int:
     out = Path(args.out) if args.out else base / "state" / "katana_urls.txt"
     rate_limit = cap_rate_by_scope(args.rate_limit, scope, "katana rate-limit")
     concurrency = cap_int_by_scope(args.concurrency, scope, "max_threads", "katana concurrency")
+    auth = load_auth_profile_for_args(base, args.auth_profile)
+    if args.auth_profile and auth is None:
+        return 2
+    profile_headers = auth_header_lines(auth or {})
     cmd = [
         katana,
         "-u",
@@ -1357,6 +1730,8 @@ def cmd_katana_crawl(args: argparse.Namespace) -> int:
     ]
     if args.headless:
         cmd.append("-headless")
+    for header in profile_headers:
+        cmd.extend(["-H", header])
     cmd.extend(profile_args(KATANA_PROFILES, args.profile))
     cmd.extend(passthrough)
     code = run_cmd(cmd)
@@ -1384,6 +1759,8 @@ def cmd_katana_crawl(args: argparse.Namespace) -> int:
         "depth": args.depth,
         "rate_limit": rate_limit,
         "concurrency": concurrency,
+        "auth_profile": args.auth_profile,
+        "auth_headers": len(profile_headers),
     }
     write_json(base / "state" / "last_katana.json", katana_state)
     append_metric(base, "katana", {
@@ -1396,6 +1773,8 @@ def cmd_katana_crawl(args: argparse.Namespace) -> int:
         "depth": args.depth,
         "rate_limit": rate_limit,
         "concurrency": concurrency,
+        "auth_profile": args.auth_profile,
+        "auth_headers": len(profile_headers),
     })
     return code
 
@@ -1426,6 +1805,10 @@ def cmd_ffuf_safe(args: argparse.Namespace) -> int:
     out = Path(args.out) if args.out else base / "state" / "ffuf-safe.json"
     rate = cap_rate_by_scope(args.rate, scope, "ffuf rate")
     threads = cap_int_by_scope(args.threads, scope, "max_threads", "ffuf threads")
+    auth = load_auth_profile_for_args(base, args.auth_profile)
+    if args.auth_profile and auth is None:
+        return 2
+    headers = merge_header_lines(auth_header_lines(auth or {}), list(args.header or []))
     cmd = [
         ffuf,
         "-u",
@@ -1448,7 +1831,7 @@ def cmd_ffuf_safe(args: argparse.Namespace) -> int:
     method = args.method.upper() if args.method else ("POST" if args.data else "")
     if method:
         cmd.extend(["-X", method])
-    for header in args.header or []:
+    for header in headers:
         cmd.extend(["-H", header])
     if args.data:
         cmd.extend(["-d", args.data])
@@ -1471,6 +1854,8 @@ def cmd_ffuf_safe(args: argparse.Namespace) -> int:
         "passthrough": redacted_passthrough,
         "candidate_count": summary["count"],
         "candidates": summary["candidates"],
+        "auth_profile": args.auth_profile,
+        "auth_headers": len(headers) - len(args.header or []),
         "next": "Manually verify candidates through endpoint-testing before reporting.",
     })
     append_metric(base, "ffuf", {
@@ -1483,6 +1868,8 @@ def cmd_ffuf_safe(args: argparse.Namespace) -> int:
         "method": method or "GET",
         "rate": rate,
         "threads": threads,
+        "auth_profile": args.auth_profile,
+        "auth_headers": len(headers) - len(args.header or []),
     })
     print(f"Candidates: {summary['count']} -> {candidates_out}")
     return code
@@ -1520,6 +1907,15 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"Max threads: {scope.get('max_threads')}")
     if scope.get("max_request_rate"):
         print(f"Max request rate: {scope.get('max_request_rate')} req/s")
+    auth_path = auth_store_path(base)
+    if auth_path.exists():
+        try:
+            raw_auth = read_json_file(auth_path, {})
+            profiles = raw_auth.get("profiles", raw_auth) if isinstance(raw_auth, dict) else {}
+            if isinstance(profiles, dict):
+                print(f"Auth profiles ({len(profiles)}): {', '.join(sorted(str(key) for key in profiles.keys())) or '-'}")
+        except Exception as exc:
+            print(f"Auth profiles: invalid ({exc})")
     print(f"Raw files: HTML={count_files(raw, ('.html', '.htm'))} JS={count_files(raw, ('.js',))}")
     if endpoints.exists():
         data = json.loads(endpoints.read_text(encoding="utf-8-sig", errors="ignore"))
@@ -1568,6 +1964,7 @@ def cmd_metrics(args: argparse.Namespace) -> int:
         return 0
 
     events_by_type = summary.get("events_by_type", {})
+    audit = summary.get("audit", {})
     endpoint_tests = summary.get("endpoint_tests", {})
     katana = summary.get("katana", {})
     ffuf = summary.get("ffuf", {})
@@ -1579,6 +1976,11 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     print(f"Last event: {summary.get('last_event_time') or '-'}")
     if isinstance(events_by_type, dict) and events_by_type:
         print("Events by type: " + ", ".join(f"{k}={v}" for k, v in events_by_type.items()))
+    if isinstance(audit, dict) and audit.get("runs"):
+        print(
+            f"Audit: runs={audit.get('runs')} latest={audit.get('latest_status') or '-'} "
+            f"blockers={audit.get('latest_blockers', 0)} warnings={audit.get('latest_warnings', 0)}"
+        )
     if isinstance(extract, dict):
         latest_unique = extract.get("latest_total_unique")
         latest_raw = extract.get("latest_total_raw")
@@ -1757,6 +2159,240 @@ def redact_headers(headers: dict[str, str]) -> dict[str, str]:
     return redacted
 
 
+def auth_store_path(base: Path) -> Path:
+    return base / "auth.local.json"
+
+
+def split_header_line(value: str) -> tuple[str, str] | None:
+    name, sep, header_value = value.partition(":")
+    if not sep or not name.strip():
+        return None
+    return name.strip(), header_value.strip()
+
+
+def auth_header_lines(auth: dict[str, object]) -> list[str]:
+    headers = auth.get("headers")
+    if not isinstance(headers, dict):
+        return []
+    result = []
+    for key, value in headers.items():
+        if str(key).strip() and str(value).strip():
+            result.append(f"{str(key).strip()}: {str(value).strip()}")
+    return result
+
+
+def header_name(value: str) -> str:
+    name, _sep, _header_value = value.partition(":")
+    return name.strip().lower()
+
+
+def merge_header_lines(profile_headers: list[str], explicit_headers: list[str]) -> list[str]:
+    explicit_names = {header_name(item) for item in explicit_headers if header_name(item)}
+    merged = [item for item in profile_headers if header_name(item) and header_name(item) not in explicit_names]
+    merged.extend(explicit_headers)
+    return merged
+
+
+def resolve_env_value(profile: dict[str, object], value_key: str, env_key: str) -> str:
+    direct = profile.get(value_key)
+    if direct:
+        return str(direct)
+    env_name = profile.get(env_key)
+    if env_name:
+        return os.environ.get(str(env_name), "")
+    return ""
+
+
+def load_auth_profile(base: Path, name: str) -> dict[str, object]:
+    if not name:
+        return {"name": "", "cookie": "", "authorization": "", "headers": {}}
+    path = auth_store_path(base)
+    if not path.exists():
+        raise FileNotFoundError(f"auth profile file not found: {path}")
+    raw = read_json_file(path, {})
+    if not isinstance(raw, dict):
+        raise ValueError(f"auth profile file must be a JSON object: {path}")
+    profiles = raw.get("profiles", raw)
+    if not isinstance(profiles, dict):
+        raise ValueError(f"auth profile file must contain a profiles object: {path}")
+    profile = profiles.get(name)
+    if not isinstance(profile, dict):
+        available = ", ".join(sorted(str(key) for key in profiles.keys())) or "-"
+        raise KeyError(f"auth profile not found: {name} (available: {available})")
+
+    cookie = resolve_env_value(profile, "cookie", "cookie_env")
+    authorization = resolve_env_value(profile, "authorization", "authorization_env")
+    headers: dict[str, str] = {}
+
+    raw_headers = profile.get("headers", {})
+    if isinstance(raw_headers, dict):
+        for key, value in raw_headers.items():
+            if isinstance(value, dict) and value.get("env"):
+                resolved = os.environ.get(str(value.get("env")), "")
+            else:
+                resolved = str(value)
+            if str(key).strip() and resolved:
+                headers[str(key).strip()] = resolved
+    elif isinstance(raw_headers, list):
+        for item in raw_headers:
+            parsed = split_header_line(str(item))
+            if parsed:
+                headers[parsed[0]] = parsed[1]
+
+    raw_header_env = profile.get("headers_env", {})
+    if isinstance(raw_header_env, dict):
+        for key, env_name in raw_header_env.items():
+            resolved = os.environ.get(str(env_name), "")
+            if str(key).strip() and resolved:
+                headers[str(key).strip()] = resolved
+
+    if authorization and not any(key.lower() == "authorization" for key in headers):
+        headers["Authorization"] = authorization
+    if cookie and not any(key.lower() == "cookie" for key in headers):
+        headers["Cookie"] = cookie
+    return {
+        "name": name,
+        "role": profile.get("role", ""),
+        "username": profile.get("username", ""),
+        "password": profile.get("password", ""),
+        "login_url": profile.get("login_url", ""),
+        "tenant": profile.get("tenant", ""),
+        "cookie": cookie,
+        "authorization": authorization,
+        "headers": headers,
+        "note": profile.get("note", ""),
+    }
+
+
+def load_auth_profile_for_args(base: Path, profile_name: str) -> dict[str, object] | None:
+    if not profile_name:
+        return None
+    try:
+        auth = load_auth_profile(base, profile_name)
+    except Exception as exc:
+        eprint(f"Auth profile error: {exc}")
+        return None
+    headers = auth.get("headers")
+    header_count = len(headers) if isinstance(headers, dict) else 0
+    print(f"Auth profile: {profile_name} (headers={header_count})")
+    return auth
+
+
+def safe_profile_summary(name: str, profile: dict[str, object]) -> str:
+    headers = profile.get("headers", {})
+    header_count = len(headers) if isinstance(headers, dict) else len(headers) if isinstance(headers, list) else 0
+    has_cookie = bool(profile.get("cookie") or profile.get("cookie_env"))
+    has_authorization = bool(profile.get("authorization") or profile.get("authorization_env"))
+    has_username = bool(profile.get("username"))
+    has_password = bool(profile.get("password"))
+    role = str(profile.get("role") or "")
+    note = str(profile.get("note") or "")
+    details = (
+        f"role={role or '-'} username={'yes' if has_username else 'no'} "
+        f"password={'yes' if has_password else 'no'} cookie={'yes' if has_cookie else 'no'} "
+        f"authorization={'yes' if has_authorization else 'no'} headers={header_count}"
+    )
+    return f"- {name}: {details}" + (f" note={note}" if note else "")
+
+
+def cmd_auth_profiles(args: argparse.Namespace) -> int:
+    base = target_dir(args.target)
+    path = auth_store_path(base)
+    if not path.exists():
+        print(f"No local auth profiles: {path}")
+        print("Create one with: python ai_src.py auth-set <target> <profile> --cookie \"...\"")
+        return 0
+    try:
+        raw = read_json_file(path, {})
+    except Exception as exc:
+        eprint(f"Auth profile error: {exc}")
+        return 1
+    profiles = raw.get("profiles", raw) if isinstance(raw, dict) else {}
+    if not isinstance(profiles, dict):
+        eprint(f"Invalid auth profile file: {path}")
+        return 1
+    if args.show_secrets:
+        if args.profile:
+            profile = profiles.get(args.profile)
+            if profile is None:
+                eprint(f"Auth profile not found: {args.profile}")
+                return 2
+            print(json.dumps({args.profile: profile}, ensure_ascii=False, indent=2))
+        else:
+            print(json.dumps({"profiles": profiles}, ensure_ascii=False, indent=2))
+        return 0
+    print(f"Auth profiles: {path}")
+    for name in sorted(str(key) for key in profiles.keys()):
+        profile = profiles.get(name)
+        if not isinstance(profile, dict):
+            continue
+        print(safe_profile_summary(name, profile))
+    return 0
+
+
+def cmd_auth_set(args: argparse.Namespace) -> int:
+    base = target_dir(args.target)
+    ensure_target_dirs(base)
+    path = auth_store_path(base)
+    raw = read_json_file(path, {"profiles": {}})
+    if not isinstance(raw, dict):
+        raw = {"profiles": {}}
+    profiles = raw.setdefault("profiles", {})
+    if not isinstance(profiles, dict):
+        raw["profiles"] = {}
+        profiles = raw["profiles"]
+
+    existing = profiles.get(args.profile)
+    profile = dict(existing) if isinstance(existing, dict) else {}
+    if args.role:
+        profile["role"] = args.role
+    if args.username:
+        profile["username"] = args.username
+    if args.password:
+        profile["password"] = args.password
+    if args.login_url:
+        profile["login_url"] = args.login_url
+    if args.tenant:
+        profile["tenant"] = args.tenant
+    if args.cookie:
+        profile["cookie"] = args.cookie
+    if args.cookie_env:
+        profile["cookie_env"] = args.cookie_env
+        profile.pop("cookie", None)
+    if args.authorization:
+        profile["authorization"] = args.authorization
+    if args.authorization_env:
+        profile["authorization_env"] = args.authorization_env
+        profile.pop("authorization", None)
+    headers = dict(profile.get("headers", {})) if isinstance(profile.get("headers"), dict) else {}
+    for item in args.header or []:
+        parsed = split_header_line(item)
+        if not parsed:
+            eprint(f"Invalid header, expected 'Name: value': {item}")
+            return 2
+        headers[parsed[0]] = parsed[1]
+    if headers:
+        profile["headers"] = headers
+    headers_env = dict(profile.get("headers_env", {})) if isinstance(profile.get("headers_env"), dict) else {}
+    for item in args.header_env or []:
+        name, sep, env_name = item.partition("=")
+        if not sep or not name.strip() or not env_name.strip():
+            eprint(f"Invalid header env, expected 'Header-Name=ENV_VAR': {item}")
+            return 2
+        headers_env[name.strip()] = env_name.strip()
+    if headers_env:
+        profile["headers_env"] = headers_env
+    if args.note:
+        profile["note"] = args.note
+    profile["updated_at"] = utc_now()
+    profiles[args.profile] = profile
+    raw["warning"] = "Local session material for authorized testing. This file is gitignored; do not commit it."
+    write_json(path, raw)
+    print(f"Auth profile saved: {args.profile} -> {path}")
+    print("Stored fields: " + ", ".join(sorted(key for key in profile.keys() if key != "updated_at")))
+    return 0
+
+
 def http_status_class(status_code: object) -> str:
     if not isinstance(status_code, int):
         return "unknown"
@@ -1786,7 +2422,15 @@ def cmd_probe(args: argparse.Namespace) -> int:
     if args.limit:
         endpoints = endpoints[:args.limit]
 
+    auth = load_auth_profile_for_args(base, args.auth_profile)
+    if args.auth_profile and auth is None:
+        return 2
     headers = {"User-Agent": "AI-SRC-Agent/1.0 authorized-security-assessment"}
+    auth_headers = auth.get("headers") if auth else {}
+    if isinstance(auth_headers, dict):
+        for key, value in auth_headers.items():
+            if str(key).strip() and str(value).strip():
+                headers[str(key).strip()] = str(value).strip()
     if args.authorization:
         headers["Authorization"] = args.authorization
     if args.cookie:
@@ -1857,6 +2501,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
         "created_at": utc_now(),
         "method": args.method,
         "headers": redact_headers(headers),
+        "auth_profile": args.auth_profile,
         "endpoints_file": str(endpoints_file),
         "scope_domains": scope_list(scope, "domains"),
         "scope_ip_ranges": scope_list(scope, "ip_ranges"),
@@ -1889,18 +2534,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
 
 
 def cmd_tools(args: argparse.Namespace) -> int:
-    tools = ["katana", "ffuf"]
-    rows = []
-    for tool in tools:
-        local_exe = TOOLS_DIR / "bin" / f"{tool}.exe"
-        local_plain = TOOLS_DIR / "bin" / tool
-        if local_exe.exists():
-            path = str(local_exe)
-        elif local_plain.exists():
-            path = str(local_plain)
-        else:
-            path = shutil.which(tool)
-        rows.append({"tool": tool, "path": path or "", "installed": bool(path)})
+    rows = tool_status_rows()
     write_json(TOOLS_DIR / "tool_status.json", {"checked_at": utc_now(), "tools": rows})
     for row in rows:
         status = row["path"] if row["installed"] else "missing"
@@ -1909,28 +2543,42 @@ def cmd_tools(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_validate_config(args: argparse.Namespace) -> int:
-    try:
-        path, config = load_config(args.config)
-    except Exception as exc:
-        print(f"Config invalid: {type(exc).__name__}: {exc}")
-        return 1
+def find_tool_path(tool: str) -> str:
+    local_exe = TOOLS_DIR / "bin" / f"{tool}.exe"
+    local_plain = TOOLS_DIR / "bin" / tool
+    if local_exe.exists():
+        return str(local_exe)
+    if local_plain.exists():
+        return str(local_plain)
+    return shutil.which(tool) or ""
 
+
+def tool_status_rows() -> list[dict[str, object]]:
+    rows = []
+    for tool in ("katana", "ffuf"):
+        path = find_tool_path(tool)
+        rows.append({"tool": tool, "path": path, "installed": bool(path)})
+    return rows
+
+
+CONFIG_LIST_FIELDS = [
+    "target_keywords", "extra_seeds", "skip_dirs", "third_party_domains",
+    "skip_extensions", "api_prefixes", "api_path_regexes",
+    "known_endpoints", "special_keywords", "garbage_substrings",
+    "extract_patterns",
+]
+
+
+def validate_config_object(config: dict[str, object]) -> tuple[list[str], list[str]]:
     failures: list[str] = []
     warnings: list[str] = []
-    list_fields = [
-        "target_keywords", "extra_seeds", "skip_dirs", "third_party_domains",
-        "skip_extensions", "api_prefixes", "api_path_regexes",
-        "known_endpoints", "special_keywords", "garbage_substrings",
-        "extract_patterns",
-    ]
-    for field in list_fields:
+    for field in CONFIG_LIST_FIELDS:
         if field in config and not isinstance(config[field], list):
             failures.append(f"`{field}` must be a list")
 
     for pattern in config.get("api_path_regexes", []):
         try:
-            re.compile(pattern)
+            re.compile(str(pattern))
         except re.error as exc:
             failures.append(f"api_path_regex invalid: {pattern}: {exc}")
 
@@ -1939,7 +2587,7 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
             failures.append(f"extract_patterns item must be object: {item!r}")
             continue
         name = item.get("name", "UNNAMED")
-        pattern = item.get("pattern", "")
+        pattern = str(item.get("pattern", ""))
         if "?P<endpoint>" not in pattern:
             failures.append(f"extract pattern `{name}` missing (?P<endpoint>...)")
         try:
@@ -1951,6 +2599,307 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
         warnings.append("target_keywords is empty; pass --target/--target-kw or fill target config")
     if not config.get("extra_seeds"):
         warnings.append("extra_seeds is empty; target must provide seeds via scope/seeds.txt/CLI")
+    return failures, warnings
+
+
+def raw_scope_field(text: str, label: str) -> str:
+    pattern = rf"^- {re.escape(label)}:\s*(.*)$"
+    match = re.search(pattern, text, flags=re.M)
+    return match.group(1).strip() if match else ""
+
+
+def missing_setup_value(value: str) -> bool:
+    clean = value.strip()
+    if not clean:
+        return True
+    lowered = clean.lower()
+    return (
+        lowered in {"todo", "todo -", "n/a", "na", "none", "-"}
+        or lowered.startswith("todo")
+        or clean in {"无", "不适用"}
+    )
+
+
+def target_state_config(base: Path) -> str:
+    raw = read_json_file(base / "state" / "target.json", {})
+    if isinstance(raw, dict):
+        value = str(raw.get("config") or "").strip()
+        if value:
+            return value
+    target_config = CONFIG_DIR / f"{base.name}.json"
+    if target_config.exists():
+        return base.name
+    return "default"
+
+
+def auth_profile_names(base: Path) -> tuple[list[str], str]:
+    path = auth_store_path(base)
+    if not path.exists():
+        return [], ""
+    try:
+        raw = read_json_file(path, {})
+    except Exception as exc:
+        return [], f"invalid auth.local.json: {exc}"
+    profiles = raw.get("profiles", raw) if isinstance(raw, dict) else {}
+    if not isinstance(profiles, dict):
+        return [], "invalid auth.local.json: missing profiles object"
+    return sorted(str(key) for key in profiles.keys()), ""
+
+
+def endpoint_export_count(path: Path) -> tuple[int, int]:
+    if not path.exists():
+        return 0, 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig", errors="ignore"))
+    except (OSError, json.JSONDecodeError):
+        return 0, 0
+    return int(data.get("total_unique") or 0), int(data.get("total_raw") or 0)
+
+
+def build_target_audit(base: Path, config_label: str) -> dict[str, object]:
+    blockers: list[str] = []
+    warnings: list[str] = []
+    self_resolvable: list[str] = []
+    ask_user_if_needed: list[str] = []
+    next_actions: list[str] = []
+
+    if not base.exists():
+        return {
+            "target": base.name,
+            "path": str(base),
+            "status": "blocked",
+            "blockers": [f"target workspace does not exist: {base}"],
+            "warnings": [],
+            "self_resolvable": [],
+            "ask_user_if_needed": [f"Run: python ai_src.py init-target {base.name} --wizard"],
+            "next_actions": [],
+        }
+
+    scope_path = base / "scope.md"
+    scope_text = scope_path.read_text(encoding="utf-8", errors="ignore") if scope_path.exists() else ""
+    scope = parse_scope(base)
+    domains = scope_list(scope, "domains")
+    seeds = scope_list(scope, "seeds")
+    ip_ranges = scope_list(scope, "ip_ranges")
+    allowed_wrappers = scope.get("allowed_wrappers")
+
+    if not scope_path.exists():
+        blockers.append(f"missing scope file: {scope_path}")
+        ask_user_if_needed.append("Create the target with init-target --wizard or complete targets/<target>/scope.md.")
+    if not domains and not ip_ranges:
+        blockers.append("no in-scope domain or IP/CIDR range is configured")
+        ask_user_if_needed.append("Ask for at least one authorized domain or IP/CIDR range before active testing.")
+    if not seeds:
+        warnings.append("no seed URLs are configured; the Agent may derive safe seeds from in-scope domains, but explicit seeds are better")
+
+    required_auth_fields = [
+        "Status",
+        "Authorization source",
+        "Window",
+    ]
+    optional_auth_fields = [
+        "Owner / SRC",
+        "Tester identity",
+    ]
+    missing_required_auth = [
+        label for label in required_auth_fields
+        if missing_setup_value(raw_scope_field(scope_text, label))
+    ]
+    missing_optional_auth = [
+        label for label in optional_auth_fields
+        if missing_setup_value(raw_scope_field(scope_text, label))
+    ]
+    if missing_required_auth:
+        blockers.append("authorization metadata is incomplete: " + ", ".join(missing_required_auth))
+        ask_user_if_needed.append("Ask the user to confirm authorization status, source, and test window.")
+    if missing_optional_auth:
+        warnings.append("scope metadata is incomplete: " + ", ".join(missing_optional_auth))
+
+    if isinstance(allowed_wrappers, list):
+        unknown = sorted(set(allowed_wrappers) - KNOWN_WRAPPERS)
+        if unknown:
+            blockers.append("unknown allowed wrapper(s): " + ", ".join(unknown))
+        if not allowed_wrappers:
+            warnings.append("scope allows no wrappers; browser-only work may continue, but katana/ffuf must not be used")
+    else:
+        warnings.append("Allowed wrappers is not explicit; wrappers are permitted only if scope allows them")
+
+    selected_config = config_label or target_state_config(base)
+    config_info: dict[str, object] = {"label": selected_config}
+    try:
+        config_path, config = load_config(selected_config)
+        config_info["path"] = str(config_path)
+        config_info["exists"] = True
+        failures, config_warnings = validate_config_object(config)
+        if failures:
+            blockers.extend(f"config invalid: {item}" for item in failures)
+        warnings.extend(f"config warning: {item}" for item in config_warnings)
+        if selected_config == "default" and (CONFIG_DIR / f"{base.name}.json").exists():
+            self_resolvable.append(f"Use target-specific config: python ai_src.py audit-target {base.name} --config {base.name}")
+        if not config.get("target_keywords") and domains:
+            self_resolvable.append("Seed target_keywords from scope domains after browser Network sampling.")
+        if not config.get("extra_seeds") and seeds:
+            self_resolvable.append("Seed extra_seeds from scope seed URLs or observed in-scope SPA routes.")
+    except Exception as exc:
+        config_info["exists"] = False
+        config_info["error"] = f"{type(exc).__name__}: {exc}"
+        blockers.append(f"selected config cannot be loaded: {selected_config}")
+        self_resolvable.append(f"Create or fix config/{base.name}.json, then run validate-config.")
+
+    tool_rows = tool_status_rows()
+    missing_tools = [str(row["tool"]) for row in tool_rows if not row.get("installed")]
+    if missing_tools:
+        warnings.append("missing optional tool(s): " + ", ".join(missing_tools))
+        self_resolvable.append("Install/refresh tools with scripts/install_tools.ps1 or place binaries in tools/bin.")
+
+    profiles, auth_error = auth_profile_names(base)
+    if auth_error:
+        warnings.append(auth_error)
+        self_resolvable.append("Fix targets/<target>/auth.local.json or recreate profiles with auth-set.")
+    elif not profiles:
+        ask_user_if_needed.append("If authenticated testing is required and no browser session can be reused, ask for an approved auth profile.")
+
+    raw_dir = base / "raw" / "remote_sites"
+    endpoints = base / "state" / "endpoints.json"
+    endpoint_unique, endpoint_raw = endpoint_export_count(endpoints)
+    endpoint_tests = read_endpoint_tests(base)
+    status_counts = Counter(str(row.get("status", "")) for row in endpoint_tests if row.get("status"))
+    reports_count = count_files(base / "reports", (".md", ".txt"))
+    findings_count = count_files(base / "findings", (".md", ".txt", ".json", ".jsonl"))
+
+    if not count_files(raw_dir, (".html", ".htm", ".js")):
+        next_actions.append("Start with browser Network sampling, then katana-crawl on useful in-scope seeds if authorized.")
+    elif endpoint_unique == 0:
+        next_actions.append("Run extract, rank-js, compare with browser Network observations, then refine config.")
+    elif not endpoint_tests:
+        next_actions.append("Start endpoint-family verification and record meaningful results with log-test.")
+    else:
+        next_actions.append("Continue unresolved endpoint families; use metrics/flywheel before changing direction.")
+    if reports_count:
+        next_actions.append("Do not stop at existing reports; continue until authorized coverage converges.")
+
+    status = "blocked" if blockers else "ready_with_warnings" if warnings else "ready"
+    return {
+        "target": base.name,
+        "path": str(base),
+        "status": status,
+        "scope": {
+            "path": str(scope_path),
+            "domains": domains,
+            "ip_ranges": ip_ranges,
+            "seeds": seeds,
+            "allowed_wrappers": allowed_wrappers,
+        },
+        "config": config_info,
+        "tools": tool_rows,
+        "auth_profiles": {
+            "path": str(auth_store_path(base)),
+            "profiles": profiles,
+            "error": auth_error,
+        },
+        "state": {
+            "raw_html": count_files(raw_dir, (".html", ".htm")),
+            "raw_js": count_files(raw_dir, (".js",)),
+            "endpoint_unique": endpoint_unique,
+            "endpoint_raw": endpoint_raw,
+            "endpoint_tests": len(endpoint_tests),
+            "endpoint_test_statuses": counter_dict(status_counts),
+            "reports": reports_count,
+            "findings": findings_count,
+            "metrics": len(read_metric_events(base)),
+        },
+        "blockers": blockers,
+        "warnings": warnings,
+        "self_resolvable": self_resolvable,
+        "ask_user_if_needed": ask_user_if_needed,
+        "next_actions": next_actions,
+    }
+
+
+def print_target_audit(audit: dict[str, object]) -> None:
+    print(f"Target audit: {audit.get('target')}")
+    print(f"Status: {audit.get('status')}")
+    print(f"Path: {audit.get('path')}")
+
+    scope = audit.get("scope", {})
+    if isinstance(scope, dict) and scope.get("path"):
+        print(f"Scope: {scope.get('path')}")
+        print(f"- Domains: {', '.join(scope.get('domains', []) or []) or '-'}")
+        print(f"- IP/CIDR: {', '.join(scope.get('ip_ranges', []) or []) or '-'}")
+        print(f"- Seeds: {', '.join(scope.get('seeds', []) or []) or '-'}")
+        wrappers = scope.get("allowed_wrappers")
+        if isinstance(wrappers, list):
+            print(f"- Allowed wrappers: {', '.join(wrappers) or 'none'}")
+
+    config = audit.get("config", {})
+    if isinstance(config, dict) and config.get("label"):
+        if config.get("exists"):
+            print(f"Config: {config.get('label')} ({config.get('path')})")
+        else:
+            print(f"Config: {config.get('label')} unavailable ({config.get('error', '-')})")
+
+    tools = audit.get("tools", [])
+    if isinstance(tools, list) and tools:
+        installed = [
+            f"{row.get('tool')}={'yes' if row.get('installed') else 'no'}"
+            for row in tools if isinstance(row, dict)
+        ]
+        print("Tools: " + (", ".join(installed) or "-"))
+
+    auth = audit.get("auth_profiles", {})
+    if isinstance(auth, dict) and auth.get("path"):
+        profiles = auth.get("profiles", [])
+        print(f"Auth profiles: {', '.join(profiles or []) or '-'}")
+
+    state = audit.get("state", {})
+    if isinstance(state, dict) and state:
+        print(
+            "State: "
+            f"raw_html={state.get('raw_html', 0)} raw_js={state.get('raw_js', 0)} "
+            f"endpoints={state.get('endpoint_unique', 0)}/{state.get('endpoint_raw', 0)} "
+            f"tests={state.get('endpoint_tests', 0)} reports={state.get('reports', 0)}"
+        )
+
+    for title, key in (
+        ("Blockers", "blockers"),
+        ("Warnings", "warnings"),
+        ("Agent self-resolvable", "self_resolvable"),
+        ("Ask user only if needed", "ask_user_if_needed"),
+        ("Suggested next actions", "next_actions"),
+    ):
+        values = audit.get(key, [])
+        if isinstance(values, list) and values:
+            print(f"{title}:")
+            for value in values:
+                print(f"- {value}")
+
+
+def cmd_audit_target(args: argparse.Namespace) -> int:
+    base = target_dir(args.target)
+    config_label = args.config or target_state_config(base)
+    audit = build_target_audit(base, config_label)
+    if args.json:
+        print(json.dumps(audit, ensure_ascii=False, indent=2))
+    else:
+        print_target_audit(audit)
+    if base.exists():
+        append_metric(base, "audit", {
+            "status": audit.get("status"),
+            "blockers": len(audit.get("blockers", [])) if isinstance(audit.get("blockers"), list) else 0,
+            "warnings": len(audit.get("warnings", [])) if isinstance(audit.get("warnings"), list) else 0,
+            "config": config_label,
+        })
+    return 2 if audit.get("status") == "blocked" else 0
+
+
+def cmd_validate_config(args: argparse.Namespace) -> int:
+    try:
+        path, config = load_config(args.config)
+    except Exception as exc:
+        print(f"Config invalid: {type(exc).__name__}: {exc}")
+        return 1
+
+    failures, warnings = validate_config_object(config)
 
     if failures:
         print(f"Config invalid: {path}")
@@ -2270,6 +3219,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--domain", action="append", default=[])
     p.add_argument("--seed", action="append", default=[])
     p.add_argument("--config", default="default", help="config name or JSON path")
+    p.add_argument("--wizard", action="store_true", help="interactively collect scope and target config")
+    p.add_argument("--force", action="store_true", help="allow wizard to overwrite existing target/config files after confirmation")
     p.set_defaults(func=cmd_init_target)
 
     p = sub.add_parser("crawl", help="crawl HTML/JS resources")
@@ -2288,6 +3239,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--render-depth", type=int, default=0)
     p.add_argument("--cookie", default="")
     p.add_argument("--authorization", default="")
+    p.add_argument("--auth-profile", default="", help="load Cookie/Authorization from targets/<target>/auth.local.json")
     p.add_argument("--max-size", type=float, default=5.0)
     p.add_argument("--timeout", type=float, default=20.0)
     p.add_argument("--delay", type=float, default=0.0)
@@ -2314,6 +3266,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="show target status")
     p.add_argument("target")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("audit-target", help="audit target readiness without enforcing a state machine")
+    p.add_argument("target")
+    p.add_argument("--config", default="", help="config name or JSON path; defaults to target state/config")
+    p.add_argument("--json", action="store_true", help="print machine-readable audit output")
+    p.set_defaults(func=cmd_audit_target)
 
     p = sub.add_parser("metrics", help="summarize passive target metrics")
     p.add_argument("target")
@@ -2360,6 +3318,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--method", choices=["HEAD", "OPTIONS", "GET"], default="HEAD")
     p.add_argument("--authorization", default="")
     p.add_argument("--cookie", default="")
+    p.add_argument("--auth-profile", default="", help="load headers from targets/<target>/auth.local.json")
     p.add_argument("--timeout", type=float, default=10.0)
     p.add_argument("--delay", type=float, default=0.2)
     p.add_argument("--limit", type=int, default=0)
@@ -2368,6 +3327,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("tools", help="check local tool availability")
     p.set_defaults(func=cmd_tools)
+
+    p = sub.add_parser("auth-profiles", help="list local ignored auth profiles for a target")
+    p.add_argument("target")
+    p.add_argument("profile", nargs="?", help="optional profile name")
+    p.add_argument("--show-secrets", action="store_true", help="print stored local credentials/session material for agent use")
+    p.set_defaults(func=cmd_auth_profiles)
+
+    p = sub.add_parser("auth-set", help="save or update a local ignored auth profile for agent automation")
+    p.add_argument("target")
+    p.add_argument("profile")
+    p.add_argument("--role", default="")
+    p.add_argument("--username", default="")
+    p.add_argument("--password", default="")
+    p.add_argument("--login-url", default="")
+    p.add_argument("--tenant", default="")
+    p.add_argument("--cookie", default="")
+    p.add_argument("--cookie-env", default="", help="environment variable that contains the Cookie header value")
+    p.add_argument("--authorization", default="")
+    p.add_argument("--authorization-env", default="", help="environment variable that contains the Authorization header value")
+    p.add_argument("--header", action="append", default=[], help="extra header as 'Name: value'")
+    p.add_argument("--header-env", action="append", default=[], help="extra header as 'Name=ENV_VAR'")
+    p.add_argument("--note", default="")
+    p.set_defaults(func=cmd_auth_set)
 
     p = sub.add_parser("validate-config", help="validate config JSON and regexes")
     p.add_argument("config", help="config name or JSON path")
@@ -2406,6 +3388,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rate-limit", type=int, default=5)
     p.add_argument("--concurrency", type=int, default=2)
     p.add_argument("--headless", action="store_true")
+    p.add_argument("--auth-profile", default="", help="add auth headers from targets/<target>/auth.local.json")
     p.add_argument("--profile", choices=sorted(KATANA_PROFILES), default="default", help="small preset of native katana args")
     p.set_defaults(func=cmd_katana_crawl, allow_passthrough=True)
 
@@ -2423,6 +3406,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=int, default=8)
     p.add_argument("--method", default="", help="optional HTTP method; defaults to POST when --data is used")
     p.add_argument("--header", action="append", default=[], help="ffuf -H header; may contain FUZZ")
+    p.add_argument("--auth-profile", default="", help="add auth headers from targets/<target>/auth.local.json")
     p.add_argument("--data", default="", help="ffuf -d request body; may contain FUZZ")
     p.add_argument("--match-codes", default="200,204,301,302,307,401,403")
     p.add_argument("--extensions", help="ffuf -e value, for example .js,.json")

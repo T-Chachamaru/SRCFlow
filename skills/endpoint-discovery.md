@@ -10,23 +10,27 @@ Recover API hosts, base paths, endpoints, methods, parameters, and auth patterns
 
 Before crawling:
 
-1. Read the target scope.
-2. Run `python ai_src.py tools` and identify which optional CLI tools are available.
-3. Visit multiple allowed seed domains with the browser MCP.
-4. Open representative SPA and HTML pages.
-5. Exercise normal read-only workflows with approved test accounts when available.
-6. When authorized, add more URL seeds with katana for each high-value in-scope seed, SPA route, or page family:
+1. If the target workspace is incomplete, use `python ai_src.py init-target <target> --wizard` or `skills/target-setup.md` first. Do not guess scope; store credentials/session material only in local ignored auth profiles.
+2. Run `python ai_src.py audit-target <target> --config <target>` when a target config exists, otherwise run `python ai_src.py audit-target <target>`.
+3. Resolve audit blockers through narrow user questions only when the Agent cannot infer the answer safely.
+4. Read the target scope.
+5. Run `python ai_src.py tools` and identify which optional CLI tools are available.
+6. Read auth profiles with `python ai_src.py auth-profiles <target> --show-secrets` when approved credentials/session values are needed for browser login or authenticated requests.
+7. Visit multiple allowed seed domains with the browser MCP.
+8. Open representative SPA and HTML pages.
+9. Exercise normal read-only workflows with approved test accounts when available.
+10. When authorized, add more URL seeds with katana for each high-value in-scope seed, SPA route, or page family:
    - `python ai_src.py katana-crawl <target> <seed-url>`
-7. Collect:
+11. Collect:
    - API hosts and domain keywords.
    - Base paths and endpoint path patterns.
    - Static asset hosts and chunk naming patterns.
    - Request wrappers and dynamic path construction.
    - Query keys, JSON body keys, and auth header names.
    - SPA routes that reveal more pages to visit.
-8. Keep `targets/<target>/state/katana_seeds.txt` as a crawl input. The main crawl includes it automatically unless `--no-katana-seeds` is passed.
-9. Update `config/<target>.json`.
-10. Run `python ai_src.py validate-config <target>`.
+12. Keep `targets/<target>/state/katana_seeds.txt` as a crawl input. The main crawl includes it automatically unless `--no-katana-seeds` is passed.
+13. Update `config/<target>.json`.
+14. Run `python ai_src.py validate-config <target>`.
 
 ## Phase 2: Crawl
 

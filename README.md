@@ -61,15 +61,55 @@ Get-Content .\tools\TO_DOWNLOAD.txt
 
 然后把对应的 `.exe` 手工放到 `tools/bin`。
 
+## 完整运行流程
+
+1. 配好浏览器 MCP，或等价的浏览器自动化与 Network 观察能力。
+2. 下载或安装 `katana`、`ffuf`，并用 `python ai_src.py tools` 确认可用。
+3. 运行初始化问答，生成目标 scope、seed、config 和本地认证 profile。
+4. 在项目根目录启动 Agent，把目标 prompt 复制进去。
+
+5. Agent 向用户简短确认当前 scope、config、auth profile 名称、允许的 wrapper、审计阻断项和警告。如果已有配置，给用户一次显式修改机会；如果缺少必要配置，只问缺少的问题。
+
+6. 问答结束后开始执行任务。常规问题由 Agent 先自己解决：重读 scope/skills、用浏览器 MCP 看 Network、读 JS/HTML/HAR、更新 config、运行 katana/crawl/extract/rank-js/probe/ffuf-safe、记录 log-test、查看 metrics/flywheel。
+
+7. 授权范围、测试账号/角色、租户上下文、业务流程批准等无法安全推断的信息，才再次问用户。
+
+8. 发现可报告漏洞后，写中文 report/finding，通过 gate，记录结果，然后继续测剩余端点家族、身份组合和攻击面。
+
 ## 创建目标
 
-初始化一个目标工作区：
+推荐使用问答式向导创建新目标：
+
+```powershell
+python ai_src.py init-target demo --wizard
+```
+
+向导会逐项询问授权信息、scope、seed、测试账号/认证 profile、安全限制、证据规则和目标配置字段，然后生成：
+
+- `targets/demo/scope.md`
+- `targets/demo/domains.txt`
+- `targets/demo/seeds.txt`
+- `config/demo.json`
+
+向导可以创建本地认证 profile，用于 Agent 自动登录、自动带 cookie/token/header 发请求。
+
+`scope.md` 只描述角色、账号标签和授权边界；`auth.local.json` 保存 Agent 需要读取的 username、password、cookie、Authorization header、额外 header、login URL、tenant 等自动化材料。
+
+认证 profile 结构示例见 [examples/auth.local.example.json](examples/auth.local.example.json)。
+
+如果目标文件已经存在，向导会在覆盖前确认；需要允许覆盖时使用：
+
+```powershell
+python ai_src.py init-target demo --wizard --force
+```
+
+脚本化或快速初始化可使用参数方式：
 
 ```powershell
 python ai_src.py init-target demo --domain example.com --seed https://www.example.com/ --config default
 ```
 
-然后检查并补全：
+参数方式只生成基础模板，之后仍需要检查并补全：
 
 - `targets/demo/scope.md`
 - `targets/demo/domains.txt`
@@ -83,6 +123,7 @@ python ai_src.py init-target demo --domain example.com --seed https://www.exampl
 - [examples/scope.example.md](examples/scope.example.md)
 - [examples/target-config.example.json](examples/target-config.example.json)
 - [targets/_template/scope.md](targets/_template/scope.md)
+- [skills/target-setup.md](skills/target-setup.md)
 
 ## 启动 Agent 会话
 
@@ -90,9 +131,18 @@ python ai_src.py init-target demo --domain example.com --seed https://www.exampl
 
 ```text
 Read AGENTS.md, skills/core.md, skills/endpoint-discovery.md,
-skills/endpoint-testing.md, and targets/demo/scope.md.
+skills/target-setup.md, skills/endpoint-testing.md, and
+targets/demo/scope.md.
 
 Operate only within scope for target demo.
+
+At startup, run:
+python ai_src.py audit-target demo --config demo
+
+Summarize the current scope, config, auth profile names, wrappers,
+blockers, and warnings. If existing configuration should be changed,
+ask only the missing or unclear questions. If there are no blockers
+and no user-requested changes, start testing.
 
 Use the soft SRCFlow loop:
 1. Sample the target with browser Network observation before crawling.
@@ -107,9 +157,13 @@ Use the soft SRCFlow loop:
 8. Use ffuf-safe only for narrow scoped discovery questions.
 9. Use metrics and flywheel as soft reflection aids.
 10. Only write Chinese vulnerability reports that pass the gates.
+11. After writing a confirmed report/finding, continue with remaining
+    endpoint families and attack surfaces until coverage converges.
+12. Ask the user only when authorization, account/role, tenant, or
+    workflow context cannot be inferred safely.
 ```
 
-把 `demo` 换成当前目标名。提示词保持英文是为了和项目内 skills 一致；最终报告仍然要求中文。
+把 `demo` 换成当前目标名。提示词保持英文是为了和项目内 skills 一致；最终报告仍然是·中文。
 
 ## Loop 工作流
 
@@ -120,14 +174,15 @@ SRCFlow 主要围绕三个循环工作。模型负责选择测试方向，但 sc
 对新目标运行爬虫前：
 
 1. 阅读 `targets/<target>/scope.md`。
-2. 确认允许的 seed domain、seed URL、IP/CIDR、速率限制和 `Allowed wrappers`。
-3. 运行 `python ai_src.py tools`。
-4. 用浏览器 MCP 访问授权范围内的代表性页面，并观察 Network。
-5. 收集 API host、base path、静态资源 host、JS chunk 规律、auth header、query key、body key 和 SPA route。
-6. 当 katana 能补充 in-scope URL 覆盖时，再使用 `katana-crawl`。
-7. 更新 `config/<target>.json`。
-8. 运行 `python ai_src.py validate-config <target>`。
-9. 再运行 `crawl`。
+2. 运行 `python ai_src.py audit-target <target> --config <target>`，没有目标配置时运行 `python ai_src.py audit-target <target>`。
+3. 确认允许的 seed domain、seed URL、IP/CIDR、速率限制和 `Allowed wrappers`。
+4. 运行 `python ai_src.py tools`。
+5. 用浏览器 MCP 访问授权范围内的代表性页面，并观察 Network。
+6. 收集 API host、base path、静态资源 host、JS chunk 规律、auth header、query key、body key 和 SPA route。
+7. 当 katana 能补充 in-scope URL 覆盖时，再使用 `katana-crawl`。
+8. 更新 `config/<target>.json`。
+9. 运行 `python ai_src.py validate-config <target>`。
+10. 再运行 `crawl`。
 
 katana 补充入口示例：
 
@@ -158,11 +213,22 @@ python ai_src.py validate-config demo
 python ai_src.py crawl demo --config demo --depth 2 --threads 10 --mode pages
 ```
 
-登录态信息应在运行时传入，不写入配置文件：
+认证信息推荐通过 auth profile 自动复用：
 
 ```powershell
-python ai_src.py crawl demo --config demo --cookie "SESSION=REDACTED"
+python ai_src.py auth-profiles demo
+python ai_src.py auth-profiles demo --show-secrets
+python ai_src.py crawl demo --config demo --auth-profile low
+python ai_src.py probe demo --base-url https://www.example.com --auth-profile low
 ```
+
+也可以由 Agent 从浏览器 MCP 中提取当前会话后写入 profile：
+
+```powershell
+python ai_src.py auth-set demo low --role "low privilege" --username low@example.test --password "REDACTED" --login-url https://www.example.com/login --cookie "SESSION=REDACTED"
+```
+
+手动运行时仍支持一次性传参，例如 `--cookie` 或 `--authorization`，但自动化 loop 应优先使用 `--auth-profile`。
 
 提取端点并排序高价值 JS/HTML 文件：
 
@@ -230,8 +296,8 @@ python ai_src.py probe demo --base-url https://www.example.com --method HEAD --l
 ```powershell
 python ai_src.py ffuf-safe demo https://www.example.com/api/FUZZ .\payloads\src-payload\fuzzing\api-paths\api路径\API字典.txt --profile paths -- -fc 404 -ac
 python ai_src.py ffuf-safe demo "https://www.example.com/api/search?FUZZ=test" .\payloads\src-payload\fuzzing\params\参数字典\web参数字典.txt --profile params -- -fc 404 -ac
-python ai_src.py ffuf-safe demo https://www.example.com/api/action .\payloads\src-payload\fuzzing\params\参数字典\CommonDebugParamNames.txt --header "X-Feature: FUZZ" --profile params -- -ac
-python ai_src.py ffuf-safe demo https://www.example.com/api/search .\payloads\src-payload\fuzzing\params\参数字典\web参数字典.txt --method POST --data '{"keyword":"FUZZ"}' --profile params -- -ac
+python ai_src.py ffuf-safe demo https://www.example.com/api/action .\payloads\src-payload\fuzzing\params\参数字典\CommonDebugParamNames.txt --auth-profile low --header "X-Feature: FUZZ" --profile params -- -ac
+python ai_src.py ffuf-safe demo https://www.example.com/api/search .\payloads\src-payload\fuzzing\params\参数字典\web参数字典.txt --auth-profile low --method POST --data '{"keyword":"FUZZ"}' --profile params -- -ac
 ```
 
 `FUZZ` 可以放在 URL、`--header` 或 `--data` 中。
@@ -250,6 +316,7 @@ python ai_src.py ffuf-safe demo https://www.example.com/api/search .\payloads\sr
 - `crawl` 校验 CLI seed、scope seed、config `extra_seeds` 和 scoped katana seeds。
 - `probe` 校验 `--base-url`，并跳过 `endpoints.json` 里的越界绝对 URL。
 - `import-har --workspace-target` 通过当前目标 scope 过滤 HAR 请求。
+- `crawl`、`probe`、`katana-crawl` 和 `ffuf-safe` 可通过 `--auth-profile` 自动读取本地认证 profile。
 - `katana-crawl` 和 `ffuf-safe` 校验目标 URL、IP/CIDR scope、速率/并发上限和 `Allowed wrappers`。
 - `--` 后的原生工具参数会透传，但覆盖目标 URL、输出路径、输出格式、scope、速率、并发、raw request 或 input command execution 的参数会被拒绝。
 
@@ -261,6 +328,7 @@ python ai_src.py ffuf-safe demo https://www.example.com/api/search .\payloads\sr
 
 - crawl
 - extract
+- audit
 - katana
 - ffuf
 - probe
@@ -323,6 +391,8 @@ python ai_src.py gate .\targets\demo\reports\finding.md --target demo
 
 如果任何门控失败，继续测试，不输出漏洞结论。
 
+如果门控通过，保存中文报告和 finding 后继续测试。项目目标不是“找到一个漏洞就停”，而是在授权范围内持续循环，直到端点家族、身份组合和主要攻击面已经穷尽或明显收敛。
+
 ## CLI 命令
 
 主命令：
@@ -333,12 +403,15 @@ crawl             爬取 HTML/JS 资源
 extract           从已爬取文件中提取端点
 gate              校验报告质量门和目标 scope
 status            查看目标状态
+audit-target      审计目标启动就绪度，输出阻断项、警告和下一步提示
 metrics           汇总被动度量
 flywheel          写入被动复盘笔记
 checkpoint        追加压缩后的 loop 上下文
 log-test          追加结构化端点测试记录
 probe             对已提取端点做低风险状态探测
 tools             检查本地工具可用性
+auth-profiles     查看本地认证 profile，可让 Agent 读取凭证和会话材料
+auth-set          创建或更新本地认证 profile
 validate-config   校验配置 JSON 和正则
 diff-endpoints    比较两个 endpoints JSON
 import-har        从浏览器 HAR 中提取 API 候选
@@ -369,6 +442,7 @@ targets/<target>/state/ffuf_candidates.json ffuf 候选摘要
 targets/<target>/state/endpoint_tests.jsonl 结构化端点测试记录
 targets/<target>/state/metrics.jsonl        被动度量事件流
 targets/<target>/state/flywheel.md          软 loop 复盘笔记
+targets/<target>/auth.local.json            本地认证 profile，Git 忽略，供 Agent 自动化使用
 targets/<target>/reports/                   最终中文报告
 ```
 
@@ -386,10 +460,17 @@ python .\ai_src.py tools
 git diff --check
 ```
 
+如果本次修改影响目标启动流程，再对当前目标运行：
+
+```powershell
+python .\ai_src.py audit-target <target> --config <target>
+```
+
 维护文档时，注意让这些文件保持一致：
 
 - [AGENTS.md](AGENTS.md)
 - [skills/core.md](skills/core.md)
+- [skills/target-setup.md](skills/target-setup.md)
 - [skills/endpoint-discovery.md](skills/endpoint-discovery.md)
 - [skills/endpoint-testing.md](skills/endpoint-testing.md)
 - [tools/README.md](tools/README.md)

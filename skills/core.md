@@ -26,8 +26,21 @@ This project runs on top of existing agent tools such as Codex, Claude Code, and
 - If GraphQL exists, inspect schema exposure and authorization on queries/mutations.
 - If no entry is obvious, keep mining JS, manifests, routes, source maps, and Network traffic.
 
+## Startup Routine
+
+- Read `AGENTS.md`, this file, `skills/target-setup.md`, `skills/endpoint-discovery.md`, `skills/endpoint-testing.md`, and the active target's `scope.md`.
+- Run `python ai_src.py audit-target <target> --config <target>` when a target config exists, otherwise run `python ai_src.py audit-target <target>`.
+- Summarize scope, config, auth profile names, wrappers, blockers, and warnings to the user before active testing.
+- If config exists, ask once whether the user wants explicit changes. If there are no blockers and the user says to continue, start the loop.
+- If required setup is missing, ask only the missing questions. Prefer self-recovery for config details that browser Network, JS/HTML review, HAR import, or target config iteration can reveal.
+- If credentials/session material is needed for automated login or authenticated tests, read it from `auth.local.json` with `python ai_src.py auth-profiles <target> --show-secrets`.
+- After startup Q&A, do not ask the user for routine next actions. Ask only for information that cannot be inferred safely, such as authorization, approved account/role access, tenant context, or business workflow approval.
+
 ## Pattern Sampling Before Crawling
 
+- For a new or incomplete target, use `python ai_src.py init-target <target> --wizard` or `skills/target-setup.md` before crawling. Do not guess authorization scope. Store credentials/session material only in local ignored auth profiles.
+- Run `python ai_src.py audit-target <target>` and resolve blockers before active testing.
+- Use `python ai_src.py auth-profiles <target> --show-secrets` when the Agent needs credentials/session values for automated login and authenticated testing.
 - Run `python ai_src.py tools` before relying on optional CLIs.
 - Use browser Network observations before running the crawler.
 - Visit multiple allowed seed domains, SPA routes, and HTML pages.
@@ -97,12 +110,13 @@ Use `skills/endpoint-testing.md` for detailed endpoint verification and result r
 - Periodically run `python ai_src.py flywheel <target>` so useful patterns become reusable notes in `state/flywheel.md`.
 - Before report output: reread this file and the report template.
 - Final report checks must bind a target: use `python ai_src.py gate <report> --target <target>` unless the report is already under `targets/<target>/reports/`.
+- A confirmed report is not the end of the run. Write the finding/report, record the result, then continue with remaining endpoint families and attack surfaces until coverage converges.
 
 ## Metrics And Flywheel
 
 - Metrics are passive observations written to `targets/<target>/state/metrics.jsonl`; they are not an external runtime or forced state machine.
 - The agent remains responsible for choosing direction from scope, target behavior, evidence quality, and report gates.
-- `metrics` answers what changed: extraction deltas, katana seeds, ffuf candidates, endpoint-test statuses, probe results, and gate failures.
+- `metrics` answers what changed: audit blockers/warnings, extraction deltas, katana seeds, ffuf candidates, endpoint-test statuses, probe results, and gate failures.
 - `flywheel` answers what to carry forward: effective config patterns, useful tool profiles, weak evidence chains, and prompt/config changes for the next loop.
 - Never report from metrics alone. Metrics can only point back to browser evidence, JS/HTML review, manual endpoint verification, and report gates.
 

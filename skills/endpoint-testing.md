@@ -45,7 +45,8 @@ For each endpoint or endpoint family, determine function, parameters, attack sur
    - sensitive data exposure
 5. Verify safely with the minimum required requests and approved test accounts.
 6. Record status and evidence.
-7. Reflect on what the result implies for sibling endpoints, config patterns, and the next test.
+7. If the result is confirmed and reportable, write the Chinese report/finding, then continue testing sibling endpoints and remaining attack surfaces.
+8. Reflect on what the result implies for sibling endpoints, config patterns, and the next test.
 
 ## ffuf In The Loop
 
@@ -79,6 +80,8 @@ If `scope.md` restricts `Allowed wrappers`, the CLI enforces that list.
 ## Verification Rules
 
 - Compare no-cookie, low-privilege, peer-user, and normal-user behavior when possible.
+- Use local auth profiles for automated authenticated requests: `python ai_src.py auth-profiles <target> --show-secrets` for Agent-readable credentials and `--auth-profile <name>` on supported commands.
+- If a role, tenant, cookie, password, or session is missing, first check `auth.local.json`, browser MCP session state, scope account labels, endpoint tests, and prior findings. Ask the user only if the authorized material is still unavailable.
 - For IDOR, test multiple IDs or explain why only one can be tested.
 - For tenant isolation, compare at least two tenant contexts when authorized.
 - For state-changing operations, use test data and stop before irreversible actions.
@@ -106,4 +109,6 @@ After several meaningful endpoint results, run `python ai_src.py metrics <target
 
 ## Report Decision
 
-Only write a Chinese vulnerability report when the result is `confirmed` and all seven gates in `skills/core.md` can pass. Otherwise keep testing notes and continue the loop.
+Only write a Chinese vulnerability report when the result is `confirmed` and all seven gates in `skills/core.md` can pass. After writing a valid report, continue the loop; do not stop until authorized endpoint families and attack surfaces are exhausted or clearly converged.
+
+When a report passes, record the tested endpoint family with `log-test`, save the report/finding, then return to sibling endpoints, related parameters, other roles, other tenants, or discovery/config iteration. A valid finding is progress signal, not a stopping condition.
