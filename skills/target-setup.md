@@ -48,27 +48,28 @@ Summarize the current scope, config path, allowed wrappers, auth profile names, 
 - Test account fields in `scope.md` should summarize roles and labels; auth profiles store the actual username/password/session values.
 - If the user is unsure, write `TODO` or `N/A` instead of inventing a value.
 - Prefer small focused questions over long forms.
-- Prefer self-recovery for config details that can be learned from browser Network, JS/HTML, HAR import, endpoint extraction, katana, or ffuf-safe.
+- Prefer self-recovery for config details that can be learned from browser Network, JS/HTML, HAR import, passive URL discovery, endpoint extraction, katana, or ffuf-safe.
 - Ask the user only for authorization boundaries, approved account access, tenant/role context, credentials/session material, or business workflow approval that cannot be inferred safely.
 - Before writing files, summarize the intended target name, domains, IP/CIDR ranges, seed URLs, allowed wrappers, and config path.
 - If updating an existing target, preserve user-written details unless the user explicitly asks to replace them.
 
 ## Minimum Questions
 
-Collect these fields:
+For the quick path, collect only these fields before writing files:
 
 - Target name.
-- Authorization status, source, window, owner/SRC, and tester identity.
+- Authorization source / owner/SRC, authorization window, and tester identity.
 - In-scope domains and seed URLs.
 - In-scope IP/CIDR ranges, or `N/A`.
 - Apps/packages, or `N/A`.
 - Allowed environments.
-- Extra out-of-scope items beyond the template defaults.
-- Test account labels: anonymous baseline, low privilege, peer user, admin/high privilege, tenant/org.
-- Auth profiles for automated testing: role, username, password, login URL, tenant, cookie, authorization header, and any extra headers.
-- Safety limits: max threads, max request rate, allowed wrappers, disallowed scan types.
-- Evidence rules: redaction, max records, screenshots, response body storage.
-- Config fields: target keywords, extra seeds, API prefixes, API regexes, known endpoints, garbage substrings.
+- Whether to use recommended rate and wrapper defaults.
+- Optional auth profiles for automated testing. Ask only for material type and the fields that type needs: cookie, token, password login, or both.
+- Optional advanced endpoint extraction hints.
+
+Do not ask separate test account labels when auth profile names already describe the roles. Write profile labels into `scope.md` and store the actual secret/session values in `auth.local.json`.
+
+Only use the full template question set when the user asks for exhaustive setup or runs `--full-wizard`.
 
 ## Preferred CLI Path
 
@@ -79,6 +80,12 @@ python ai_src.py init-target <target> --wizard
 ```
 
 The wizard writes the target files, can create local auth profiles, and validates the generated config.
+
+The default wizard is intentionally short. For exhaustive template-field prompts, use:
+
+```powershell
+python ai_src.py init-target <target> --full-wizard
+```
 
 ## Manual Agent Path
 

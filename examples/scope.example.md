@@ -31,14 +31,13 @@
 
 - Third-party analytics, captcha, payment, CDN, and customer support domains.
 - DoS, stress testing, credential stuffing, social engineering.
-- Bulk export of sensitive data.
 - Irreversible state changes outside test tenant.
 
 ## Test Accounts
 
 - Anonymous / no-auth baseline: no cookies.
-- Low privilege: low@example.test
-- Peer user: peer@example.test
+- Low privilege: auth.local.json profile: low.
+- Peer user: auth.local.json profile: peer.
 - Admin / high privilege: only if explicitly approved.
 - Test tenant / organization: Example-Test-Tenant.
 
@@ -46,12 +45,12 @@
 
 - Max threads: 5
 - Max request rate: 2 req/s
-- Allowed wrappers: katana-crawl, ffuf-safe
+- Allowed wrappers: ffuf-safe, gau-urls, katana-crawl, paramspider-urls
 - Disallowed scan types: brute force, destructive, DoS, intrusive fuzzing
 
 ## Evidence Rules
 
-- Redaction requirements: redact tokens, phones, emails, IDs except minimal proof.
+- Evidence handling: user-managed evidence handling.
 - Maximum records to view: 3.
-- Screenshot allowed: yes, with redaction.
-- Response body storage allowed: only sanitized excerpts.
+- Screenshot allowed: yes.
+- Response body storage allowed: yes, within authorization.

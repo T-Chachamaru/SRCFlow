@@ -27,7 +27,7 @@
 - Third-party domains unless explicitly listed above.
 - Production destructive actions.
 - Denial of service, stress testing, credential stuffing, social engineering.
-- Bulk export of sensitive data.
+- Bulk export outside approved proof requirements.
 - Payment, SMS, email, push notification, or irreversible workflows unless explicit test data is provided.
 - Employee, customer, or private tenant data outside the approved test accounts.
 
@@ -43,17 +43,16 @@
 
 - Max threads:
 - Max request rate:
-- Allowed wrappers: katana-crawl, ffuf-safe, or narrower
+- Allowed wrappers: ffuf-safe, gau-urls, katana-crawl, paramspider-urls, or narrower
 - Disallowed scan types: brute force, destructive, DoS, intrusive fuzzing
 
 ## Evidence Rules
 
-- Redaction requirements:
+- Evidence handling:
 - Maximum records to view:
 - Screenshot allowed: yes/no
 - Response body storage allowed: yes/no
 
 ## Notes
 
-- Keep evidence minimal.
 - Stop before irreversible state changes unless explicit test data is available.

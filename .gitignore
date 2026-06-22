@@ -9,6 +9,7 @@ targets/*/reports/
 !targets/_template/
 
 # Tool caches and downloaded release archives
+tools/bin/
 tools/downloads/
 tools/tool_status.json
 tools/tool_install_status.json

@@ -7,12 +7,18 @@ Recommended commands:
 ```powershell
 python ai_src.py init-target demo --wizard
 python ai_src.py audit-target demo --config demo
+python ai_src.py gau-urls demo example.com --fp
+python ai_src.py paramspider-urls demo example.com
+python ai_src.py import-har .\captures\demo.har --workspace-target demo --as-endpoints --as-recipes
 python ai_src.py crawl demo --config demo --mode pages --threads 10 --depth 2
 python ai_src.py extract demo --config demo
+python ai_src.py recipe-list demo
 python ai_src.py status demo
 ```
 
 For scripted setup, `init-target` still accepts `--domain`, `--seed`, and `--config`, but the wizard is preferred for complete scope and config capture.
+
+The default wizard is a short setup path. Use `python ai_src.py init-target <target> --full-wizard` only when exhaustive template-field prompts are needed.
 
 At Agent startup, audit the target, summarize existing scope/config/auth profile names, ask only for missing or explicitly changed configuration, then continue the soft loop.
 

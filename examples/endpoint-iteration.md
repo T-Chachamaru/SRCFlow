@@ -9,6 +9,11 @@
 - Tool status checked:
 - Browser pages exercised:
 - Auth context:
+- HAR imported:
+- Request recipes added:
+- gau URLs collected:
+- ParamSpider URLs collected:
+- Passive parameter file reviewed:
 - Katana routes collected:
 - Katana scoped seed file:
 
@@ -26,9 +31,11 @@
 - Query keys:
 - Body keys:
 - SPA routes to revisit:
+- Normal workflow recipes:
 
 ### Config Changes
 
+- `extra_seeds` added:
 - `api_prefixes` added:
 - `api_path_regexes` added:
 - `extract_patterns` added:
@@ -50,6 +57,7 @@
 - Current snapshot:
 - High-value files reviewed:
 - HAR / Network source:
+- Passive source:
 - Katana seed source:
 - ffuf candidate source:
 - Metrics summary:
@@ -57,14 +65,17 @@
 
 ### Missed Patterns
 
-- Miss source: Network / katana / JS review / HTML review / manifest / links / HAR
+- Miss source: Network / gau / ParamSpider / katana / JS review / HTML review / manifest / links / HAR
 - Missed request wrapper:
 - Missed path pattern:
+- Missed parameter source:
 - False-positive pattern:
 
 ### Results
 
 - New endpoints:
+- New parameter names:
+- Request recipes added:
 - False positives:
 - Files to reread:
 
